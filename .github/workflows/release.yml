@@ -1,0 +1,366 @@
+name: Release Build
+
+on:
+  push:
+    tags:
+      - 'v*.*.*'
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Release version (e.g., v1.0.0)'
+        required: true
+        type: string
+
+permissions:
+  contents: write
+
+env:
+  NODE_VERSION: '18.x'
+
+jobs:
+  # Create Release
+  create-release:
+    name: Create Release
+    runs-on: ubuntu-latest
+    outputs:
+      upload_url: ${{ steps.create_release.outputs.upload_url }}
+      version: ${{ steps.get_version.outputs.version }}
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Get version
+        id: get_version
+        run: |
+          if [ "${{ github.event_name }}" == "workflow_dispatch" ]; then
+            echo "version=${{ inputs.version }}" >> $GITHUB_OUTPUT
+          else
+            echo "version=${GITHUB_REF#refs/tags/}" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Create Release
+        id: create_release
+        uses: actions/create-release@v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          tag_name: ${{ steps.get_version.outputs.version }}
+          release_name: Release ${{ steps.get_version.outputs.version }}
+          body: |
+            ## 🚀 Anti-Detect Browser ${{ steps.get_version.outputs.version }}
+
+            ### 📥 دانلود
+
+            برای هر سیستم عامل، فایل مناسب رو دانلود کنید:
+
+            - **Windows**: `Anti-Detect-Browser-Setup-*.exe`
+            - **macOS**: `Anti-Detect-Browser-*.dmg`
+            - **Linux**: `Anti-Detect-Browser-*.AppImage` یا `.deb`
+
+            ### 📋 تغییرات در این نسخه
+
+            - بهبودهای عملکرد
+            - رفع باگ‌ها
+            - امنیت بیشتر
+
+            ### 📚 راهنماها
+
+            - [راهنمای نصب ویندوز](INSTALL-WINDOWS.md)
+            - [راهنمای نصب مک](INSTALL-MAC.md)
+            - [راهنمای سریع](QUICK-START.md)
+
+            ### ✨ ویژگی‌ها
+
+            ✅ Fingerprint Spoofing پیشرفته
+            ✅ مدیریت چند پروفایل
+            ✅ پشتیبانی از Proxy
+            ✅ رمزنگاری AES-256
+            ✅ Cloud Sync (اختیاری)
+
+            ---
+
+            **نیاز به کمک؟** [مستندات کامل](README.md) را مطالعه کنید.
+          draft: false
+          prerelease: false
+
+  # Build for Windows
+  build-windows:
+    name: Build for Windows
+    runs-on: windows-latest
+    needs: create-release
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+
+      - name: Install dependencies
+        working-directory: ./desktop-app
+        run: |
+          npm ci
+          cd renderer
+          npm ci
+          cd ..
+
+      - name: Build React UI
+        working-directory: ./desktop-app/renderer
+        run: npm run build
+
+      - name: Build Electron for Windows
+        working-directory: ./desktop-app
+        run: npm run build:win
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Get installer name
+        id: get_installer
+        shell: bash
+        run: |
+          INSTALLER=$(ls desktop-app/dist/*.exe | head -1)
+          echo "installer_path=$INSTALLER" >> $GITHUB_OUTPUT
+          echo "installer_name=$(basename $INSTALLER)" >> $GITHUB_OUTPUT
+
+      - name: Upload Windows Installer
+        uses: actions/upload-release-asset@v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          upload_url: ${{ needs.create-release.outputs.upload_url }}
+          asset_path: ${{ steps.get_installer.outputs.installer_path }}
+          asset_name: Anti-Detect-Browser-Setup-${{ needs.create-release.outputs.version }}-Windows.exe
+          asset_content_type: application/octet-stream
+
+      - name: Get portable name
+        id: get_portable
+        shell: bash
+        run: |
+          if [ -f "desktop-app/dist/Anti-Detect Browser.exe" ]; then
+            echo "portable_exists=true" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Upload Windows Portable
+        if: steps.get_portable.outputs.portable_exists == 'true'
+        uses: actions/upload-release-asset@v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          upload_url: ${{ needs.create-release.outputs.upload_url }}
+          asset_path: desktop-app/dist/Anti-Detect Browser.exe
+          asset_name: Anti-Detect-Browser-${{ needs.create-release.outputs.version }}-Windows-Portable.exe
+          asset_content_type: application/octet-stream
+
+  # Build for macOS
+  build-macos:
+    name: Build for macOS
+    runs-on: macos-latest
+    needs: create-release
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+
+      - name: Install dependencies
+        working-directory: ./desktop-app
+        run: |
+          npm ci
+          cd renderer
+          npm ci
+          cd ..
+
+      - name: Build React UI
+        working-directory: ./desktop-app/renderer
+        run: npm run build
+
+      - name: Build Electron for macOS
+        working-directory: ./desktop-app
+        run: npm run build:mac
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Get DMG name
+        id: get_dmg
+        run: |
+          DMG=$(ls desktop-app/dist/*.dmg | head -1)
+          echo "dmg_path=$DMG" >> $GITHUB_OUTPUT
+          echo "dmg_name=$(basename $DMG)" >> $GITHUB_OUTPUT
+
+      - name: Upload macOS DMG
+        uses: actions/upload-release-asset@v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          upload_url: ${{ needs.create-release.outputs.upload_url }}
+          asset_path: ${{ steps.get_dmg.outputs.dmg_path }}
+          asset_name: Anti-Detect-Browser-${{ needs.create-release.outputs.version }}-macOS.dmg
+          asset_content_type: application/octet-stream
+
+      - name: Get ZIP name
+        id: get_zip
+        run: |
+          if [ -f desktop-app/dist/*.zip ]; then
+            ZIP=$(ls desktop-app/dist/*.zip | head -1)
+            echo "zip_path=$ZIP" >> $GITHUB_OUTPUT
+            echo "zip_exists=true" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Upload macOS ZIP
+        if: steps.get_zip.outputs.zip_exists == 'true'
+        uses: actions/upload-release-asset@v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          upload_url: ${{ needs.create-release.outputs.upload_url }}
+          asset_path: ${{ steps.get_zip.outputs.zip_path }}
+          asset_name: Anti-Detect-Browser-${{ needs.create-release.outputs.version }}-macOS.zip
+          asset_content_type: application/zip
+
+  # Build for Linux
+  build-linux:
+    name: Build for Linux
+    runs-on: ubuntu-latest
+    needs: create-release
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+
+      - name: Install dependencies
+        working-directory: ./desktop-app
+        run: |
+          npm ci
+          cd renderer
+          npm ci
+          cd ..
+
+      - name: Build React UI
+        working-directory: ./desktop-app/renderer
+        run: npm run build
+
+      - name: Build Electron for Linux
+        working-directory: ./desktop-app
+        run: npm run build:linux
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Get AppImage name
+        id: get_appimage
+        run: |
+          APPIMAGE=$(ls desktop-app/dist/*.AppImage | head -1)
+          echo "appimage_path=$APPIMAGE" >> $GITHUB_OUTPUT
+          echo "appimage_name=$(basename $APPIMAGE)" >> $GITHUB_OUTPUT
+
+      - name: Upload Linux AppImage
+        uses: actions/upload-release-asset@v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          upload_url: ${{ needs.create-release.outputs.upload_url }}
+          asset_path: ${{ steps.get_appimage.outputs.appimage_path }}
+          asset_name: Anti-Detect-Browser-${{ needs.create-release.outputs.version }}-Linux.AppImage
+          asset_content_type: application/octet-stream
+
+      - name: Get DEB name
+        id: get_deb
+        run: |
+          if [ -f desktop-app/dist/*.deb ]; then
+            DEB=$(ls desktop-app/dist/*.deb | head -1)
+            echo "deb_path=$DEB" >> $GITHUB_OUTPUT
+            echo "deb_exists=true" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Upload Linux DEB
+        if: steps.get_deb.outputs.deb_exists == 'true'
+        uses: actions/upload-release-asset@v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          upload_url: ${{ needs.create-release.outputs.upload_url }}
+          asset_path: ${{ steps.get_deb.outputs.deb_path }}
+          asset_name: Anti-Detect-Browser-${{ needs.create-release.outputs.version }}-Linux.deb
+          asset_content_type: application/octet-stream
+
+  # Build Docker Image
+  build-docker:
+    name: Build Docker Image
+    runs-on: ubuntu-latest
+    needs: create-release
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to Docker Hub
+        if: github.event_name != 'pull_request'
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKER_USERNAME }}
+          password: ${{ secrets.DOCKER_PASSWORD }}
+        continue-on-error: true
+
+      - name: Extract metadata
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: |
+            ${{ secrets.DOCKER_USERNAME }}/antidetect-browser
+          tags: |
+            type=semver,pattern={{version}},value=${{ needs.create-release.outputs.version }}
+            type=semver,pattern={{major}}.{{minor}},value=${{ needs.create-release.outputs.version }}
+            type=raw,value=latest
+
+      - name: Build and push Docker image
+        uses: docker/build-push-action@v5
+        with:
+          context: ./backend
+          file: ./backend/Dockerfile
+          push: ${{ github.event_name != 'pull_request' && secrets.DOCKER_USERNAME != '' }}
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+        continue-on-error: true
+
+  # Release Summary
+  release-summary:
+    name: Release Summary
+    runs-on: ubuntu-latest
+    needs: [create-release, build-windows, build-macos, build-linux, build-docker]
+    if: always()
+
+    steps:
+      - name: Summary
+        run: |
+          echo "## 🎉 Release ${{ needs.create-release.outputs.version }} Complete!" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### Build Status:" >> $GITHUB_STEP_SUMMARY
+          echo "- ✅ Windows: ${{ needs.build-windows.result }}" >> $GITHUB_STEP_SUMMARY
+          echo "- ✅ macOS: ${{ needs.build-macos.result }}" >> $GITHUB_STEP_SUMMARY
+          echo "- ✅ Linux: ${{ needs.build-linux.result }}" >> $GITHUB_STEP_SUMMARY
+          echo "- ✅ Docker: ${{ needs.build-docker.result }}" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### 📥 Download:" >> $GITHUB_STEP_SUMMARY
+          echo "[Release Page](https://github.com/${{ github.repository }}/releases/tag/${{ needs.create-release.outputs.version }})" >> $GITHUB_STEP_SUMMARY
+
+      - name: Check for failures
+        if: ${{ needs.build-windows.result == 'failure' || needs.build-macos.result == 'failure' || needs.build-linux.result == 'failure' }}
+        run: |
+          echo "⚠️ Some builds failed but release was still created." >> $GITHUB_STEP_SUMMARY
+          echo "Please check the failed jobs and re-run if necessary." >> $GITHUB_STEP_SUMMARY

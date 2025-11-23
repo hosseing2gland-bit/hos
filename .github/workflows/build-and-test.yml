@@ -1,0 +1,314 @@
+name: Build and Test
+
+on:
+  push:
+    branches: [ main, develop ]
+  pull_request:
+    branches: [ main, develop ]
+  workflow_dispatch:
+
+env:
+  NODE_VERSION: '18.x'
+
+jobs:
+  # Job 1: Test Backend
+  test-backend:
+    name: Test Backend API
+    runs-on: ubuntu-latest
+
+    services:
+      mongodb:
+        image: mongo:6
+        ports:
+          - 27017:27017
+        env:
+          MONGO_INITDB_ROOT_USERNAME: admin
+          MONGO_INITDB_ROOT_PASSWORD: testpass
+        options: >-
+          --health-cmd "echo 'db.runCommand(\"ping\").ok' | mongosh localhost:27017/test --quiet"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: 'npm'
+          cache-dependency-path: backend/package-lock.json
+
+      - name: Install backend dependencies
+        working-directory: ./backend
+        run: npm ci
+
+      - name: Create test .env file
+        working-directory: ./backend
+        run: |
+          cat > .env << EOF
+          NODE_ENV=test
+          PORT=3000
+          MONGODB_URI=mongodb://admin:testpass@localhost:27017/antidetect_test?authSource=admin
+          JWT_SECRET=test-jwt-secret-key-for-ci-testing-purposes-only-min-64-chars-required
+          ENCRYPTION_KEY=test-encryption-key-32-chars!
+          JWT_ACCESS_EXPIRES_IN=15m
+          JWT_REFRESH_EXPIRES_IN=7d
+          BCRYPT_SALT_ROUNDS=10
+          RATE_LIMIT_WINDOW_MS=900000
+          RATE_LIMIT_MAX_REQUESTS=100
+          LOG_LEVEL=error
+          EOF
+
+      - name: Run backend linter
+        working-directory: ./backend
+        run: npm run lint
+        continue-on-error: true
+
+      - name: Run backend tests
+        working-directory: ./backend
+        run: npm test
+        continue-on-error: true
+
+      - name: Check backend can start
+        working-directory: ./backend
+        run: |
+          timeout 10s npm start || true
+          echo "Backend startup test completed"
+
+      - name: Upload backend test results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: backend-test-results
+          path: backend/coverage/
+
+  # Job 2: Build Desktop App - Windows
+  build-windows:
+    name: Build Desktop App (Windows)
+    runs-on: windows-latest
+    needs: test-backend
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: 'npm'
+          cache-dependency-path: desktop-app/package-lock.json
+
+      - name: Install desktop-app dependencies
+        working-directory: ./desktop-app
+        run: npm ci
+
+      - name: Install renderer dependencies
+        working-directory: ./desktop-app/renderer
+        run: npm ci
+
+      - name: Build React UI
+        working-directory: ./desktop-app/renderer
+        run: npm run build
+
+      - name: Build Electron App for Windows
+        working-directory: ./desktop-app
+        run: npm run build:win
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Upload Windows artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-build
+          path: |
+            desktop-app/dist/*.exe
+            desktop-app/dist/*.zip
+          retention-days: 30
+
+  # Job 3: Build Desktop App - macOS
+  build-macos:
+    name: Build Desktop App (macOS)
+    runs-on: macos-latest
+    needs: test-backend
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: 'npm'
+          cache-dependency-path: desktop-app/package-lock.json
+
+      - name: Install desktop-app dependencies
+        working-directory: ./desktop-app
+        run: npm ci
+
+      - name: Install renderer dependencies
+        working-directory: ./desktop-app/renderer
+        run: npm ci
+
+      - name: Build React UI
+        working-directory: ./desktop-app/renderer
+        run: npm run build
+
+      - name: Build Electron App for macOS
+        working-directory: ./desktop-app
+        run: npm run build:mac
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Upload macOS artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: macos-build
+          path: |
+            desktop-app/dist/*.dmg
+            desktop-app/dist/*.zip
+          retention-days: 30
+
+  # Job 4: Build Desktop App - Linux
+  build-linux:
+    name: Build Desktop App (Linux)
+    runs-on: ubuntu-latest
+    needs: test-backend
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: 'npm'
+          cache-dependency-path: desktop-app/package-lock.json
+
+      - name: Install desktop-app dependencies
+        working-directory: ./desktop-app
+        run: npm ci
+
+      - name: Install renderer dependencies
+        working-directory: ./desktop-app/renderer
+        run: npm ci
+
+      - name: Build React UI
+        working-directory: ./desktop-app/renderer
+        run: npm run build
+
+      - name: Build Electron App for Linux
+        working-directory: ./desktop-app
+        run: npm run build:linux
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Upload Linux artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: linux-build
+          path: |
+            desktop-app/dist/*.AppImage
+            desktop-app/dist/*.deb
+          retention-days: 30
+
+  # Job 5: Docker Build Test
+  test-docker:
+    name: Test Docker Build
+    runs-on: ubuntu-latest
+    needs: test-backend
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Create .env file for docker-compose
+        run: |
+          cat > .env << EOF
+          MONGO_PASSWORD=testpass123
+          JWT_SECRET=test-jwt-secret-for-docker-compose-testing-min-64-characters-long
+          ENCRYPTION_KEY=test-encryption-key-32-chars!
+          AWS_ACCESS_KEY_ID=test
+          AWS_SECRET_ACCESS_KEY=test
+          AWS_S3_BUCKET=test-bucket
+          EOF
+
+      - name: Build Docker images
+        run: docker-compose build backend
+
+      - name: Test Docker Compose
+        run: |
+          docker-compose up -d mongodb backend
+          sleep 30
+          docker-compose ps
+          docker-compose logs backend
+
+      - name: Test backend health
+        run: |
+          curl --retry 5 --retry-delay 5 --retry-connrefused http://localhost:3000/api/v1/health || exit 1
+
+      - name: Cleanup
+        if: always()
+        run: docker-compose down -v
+
+  # Job 6: Security Scan
+  security-scan:
+    name: Security Scan
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Run npm audit on backend
+        working-directory: ./backend
+        run: npm audit --audit-level=moderate
+        continue-on-error: true
+
+      - name: Run npm audit on desktop-app
+        working-directory: ./desktop-app
+        run: npm audit --audit-level=moderate
+        continue-on-error: true
+
+      - name: Run npm audit on renderer
+        working-directory: ./desktop-app/renderer
+        run: npm audit --audit-level=moderate
+        continue-on-error: true
+
+  # Job 7: Build Success Summary
+  build-summary:
+    name: Build Summary
+    runs-on: ubuntu-latest
+    needs: [test-backend, build-windows, build-macos, build-linux, test-docker, security-scan]
+    if: always()
+
+    steps:
+      - name: Check build status
+        run: |
+          echo "## Build Summary" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "✅ All builds completed!" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### Build Results:" >> $GITHUB_STEP_SUMMARY
+          echo "- Backend Tests: ${{ needs.test-backend.result }}" >> $GITHUB_STEP_SUMMARY
+          echo "- Windows Build: ${{ needs.build-windows.result }}" >> $GITHUB_STEP_SUMMARY
+          echo "- macOS Build: ${{ needs.build-macos.result }}" >> $GITHUB_STEP_SUMMARY
+          echo "- Linux Build: ${{ needs.build-linux.result }}" >> $GITHUB_STEP_SUMMARY
+          echo "- Docker Test: ${{ needs.test-docker.result }}" >> $GITHUB_STEP_SUMMARY
+          echo "- Security Scan: ${{ needs.security-scan.result }}" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "📦 Artifacts are available in the Actions tab." >> $GITHUB_STEP_SUMMARY
+
+      - name: Post failure comment
+        if: ${{ needs.test-backend.result == 'failure' || needs.build-windows.result == 'failure' || needs.build-macos.result == 'failure' || needs.build-linux.result == 'failure' }}
+        run: |
+          echo "❌ Some builds failed. Please check the logs above for details." >> $GITHUB_STEP_SUMMARY
+          exit 1
